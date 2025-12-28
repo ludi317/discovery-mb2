@@ -3,13 +3,13 @@
 #![no_std]
 
 use cortex_m_rt::entry;
-use embedded_hal::delay::DelayNs;
+use embedded_hal::{delay::DelayNs, digital::OutputPin};
 use panic_rtt_target as _;
 use rtt_target::rtt_init_print;
 
 use microbit::{
     display::blocking::Display,
-    hal::{twim, Timer},
+    hal::{gpio, twim, Timer},
     pac::twim0::frequency::FREQUENCY_A,
 };
 
@@ -23,6 +23,7 @@ fn main() -> ! {
     let i2c = { twim::Twim::new(board.TWIM0, board.i2c_internal.into(), FREQUENCY_A::K100) };
     let mut timer = Timer::new(board.TIMER0);
     let mut display = Display::new(board.display_pins);
+    let mut speaker_pin = board.speaker_pin.into_push_pull_output(gpio::Level::Low);
 
     // Initialize accelerometer
     let mut sensor = Lsm303agr::new_with_i2c(i2c);
@@ -44,7 +45,15 @@ fn main() -> ! {
 
     // Tilt threshold in milliG (1000 mg = 1g)
     // Adjust this value to make it more or less sensitive
-    const TILT_THRESHOLD: i32 = 250;
+    const TILT_THRESHOLD: i32 = 100;
+
+    // LED display refresh time in milliseconds
+    // Lower values make it more responsive, higher values save power
+    const DISPLAY_TIME_MS: u32 = 75;
+
+    // Sound configuration for center position beep
+    const BEEP_FREQUENCY_HZ: u32 = 440; // A4 note
+    const BEEP_DURATION_MS: u32 = 50;   // Short beep
 
     loop {
         // Wait for new accelerometer data
@@ -77,7 +86,20 @@ fn main() -> ! {
         // Set new LED position
         leds[led_row as usize][led_col as usize] = 255u8;
 
-        // Display the LED grid for 100ms
-        display.show(&mut timer, leds, 100);
+        // Play a beep if LED is at center position
+        if led_row == 2 && led_col == 2 {
+            let period_us = 1_000_000 / BEEP_FREQUENCY_HZ;
+            let cycles = (BEEP_DURATION_MS * 1000) / period_us;
+
+            for _ in 0..cycles {
+                speaker_pin.set_high().unwrap();
+                timer.delay_us(period_us / 2);
+                speaker_pin.set_low().unwrap();
+                timer.delay_us(period_us / 2);
+            }
+        }
+
+        // Display the LED grid
+        display.show(&mut timer, leds, DISPLAY_TIME_MS);
     }
 }
