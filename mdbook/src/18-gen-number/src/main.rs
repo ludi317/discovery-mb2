@@ -13,7 +13,7 @@ use panic_rtt_target as _;
 use rtt_target::{rprintln, rtt_init_print};
 
 use microbit::{
-    display::nonblocking::{Display, GreyscaleImage},
+    display::nonblocking::{Display, BitImage},
     hal::{
         gpio::{self, Pin, Output, PushPull},
         gpiote,
@@ -113,7 +113,7 @@ fn play_beep_from_interrupt() {
 
 fn update_display(value: u8) {
     let pattern = get_dice_pattern(value);
-    let image = GreyscaleImage::new(&pattern);
+    let image = BitImage::new(&pattern);
 
     interrupt_free(|cs| {
         if let Some(display) = DISPLAY.borrow(cs).borrow_mut().as_mut() {
@@ -192,49 +192,50 @@ fn main() -> ! {
 }
 
 // Get LED pattern for numbers 1-6
+// Returns simple binary: 0 = off, 1 = on
 fn get_dice_pattern(value: u8) -> [[u8; 5]; 5] {
     match value {
         1 => [
-            [0, 0, 9, 0, 0],
-            [0, 9, 9, 0, 0],
-            [0, 0, 9, 0, 0],
-            [0, 0, 9, 0, 0],
-            [0, 9, 9, 9, 0],
+            [0, 0, 1, 0, 0],
+            [0, 1, 1, 0, 0],
+            [0, 0, 1, 0, 0],
+            [0, 0, 1, 0, 0],
+            [0, 1, 1, 1, 0],
         ],
         2 => [
-            [0, 9, 9, 9, 0],
-            [0, 0, 0, 9, 0],
-            [0, 9, 9, 9, 0],
-            [0, 9, 0, 0, 0],
-            [0, 9, 9, 9, 0],
+            [0, 1, 1, 1, 0],
+            [0, 0, 0, 1, 0],
+            [0, 1, 1, 1, 0],
+            [0, 1, 0, 0, 0],
+            [0, 1, 1, 1, 0],
         ],
         3 => [
-            [0, 9, 9, 9, 0],
-            [0, 0, 0, 9, 0],
-            [0, 9, 9, 9, 0],
-            [0, 0, 0, 9, 0],
-            [0, 9, 9, 9, 0],
+            [0, 1, 1, 1, 0],
+            [0, 0, 0, 1, 0],
+            [0, 1, 1, 1, 0],
+            [0, 0, 0, 1, 0],
+            [0, 1, 1, 1, 0],
         ],
         4 => [
-            [0, 9, 0, 9, 0],
-            [0, 9, 0, 9, 0],
-            [0, 9, 9, 9, 0],
-            [0, 0, 0, 9, 0],
-            [0, 0, 0, 9, 0],
+            [0, 1, 0, 1, 0],
+            [0, 1, 0, 1, 0],
+            [0, 1, 1, 1, 0],
+            [0, 0, 0, 1, 0],
+            [0, 0, 0, 1, 0],
         ],
         5 => [
-            [0, 9, 9, 9, 0],
-            [0, 9, 0, 0, 0],
-            [0, 9, 9, 9, 0],
-            [0, 0, 0, 9, 0],
-            [0, 9, 9, 9, 0],
+            [0, 1, 1, 1, 0],
+            [0, 1, 0, 0, 0],
+            [0, 1, 1, 1, 0],
+            [0, 0, 0, 1, 0],
+            [0, 1, 1, 1, 0],
         ],
         6 => [
-            [0, 9, 9, 9, 0],
-            [0, 9, 0, 0, 0],
-            [0, 9, 9, 9, 0],
-            [0, 9, 0, 9, 0],
-            [0, 9, 9, 9, 0],
+            [0, 1, 1, 1, 0],
+            [0, 1, 0, 0, 0],
+            [0, 1, 1, 1, 0],
+            [0, 1, 0, 1, 0],
+            [0, 1, 1, 1, 0],
         ],
         _ => [
             [0, 0, 0, 0, 0],
