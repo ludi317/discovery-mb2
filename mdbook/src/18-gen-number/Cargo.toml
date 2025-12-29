@@ -10,6 +10,8 @@ cortex-m-rt = "0.7.5"
 rtt-target = "0.6.1"
 panic-rtt-target = "0.2.0"
 embedded-hal = "1.0.0"
+critical-section = "1"
+critical-section-lock-mut = "0.1"
 
 [dependencies.cortex-m]
 version = "0.7.7"
