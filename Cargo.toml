@@ -14,6 +14,7 @@ members = [
   "mdbook/src/15-interrupts",
   "mdbook/src/16-snake-game",
   "mdbook/src/17-led-tilt",
+  "mdbook/src/18-gen-number",
   "mdbook/src/appendix/3-mag-calibration",
   "mdbook/src/serial-setup",
 ]

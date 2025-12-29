@@ -100,6 +100,6 @@ fn main() -> ! {
         }
 
         // Display the LED grid
-        display.show(&mut timer, leds, DISPLAY_TIME_MS);
+        display.sh2ow(&mut timer, leds, DISPLAY_TIME_MS);
     }
 }
