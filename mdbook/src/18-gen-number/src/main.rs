@@ -1,14 +1,11 @@
 #![no_main]
 #![no_std]
 
-use core::sync::atomic::{AtomicU32, Ordering};
-
 use cortex_m::asm;
 use cortex_m_rt::entry;
 use critical_section_lock_mut::LockMut;
 use embedded_hal::{delay::DelayNs, digital::OutputPin};
 use panic_rtt_target as _;
-use rtt_target::{rprintln, rtt_init_print};
 
 use microbit::{
     display::nonblocking::{Display, BitImage},
@@ -16,6 +13,7 @@ use microbit::{
         gpio::{self, Pin, Output, PushPull},
         gpiote,
         pac::{self, interrupt, TIMER0, TIMER1},
+        rng::Rng,
         Timer,
     },
 };
@@ -27,43 +25,30 @@ struct BeepResources {
 }
 
 // Global state shared between interrupts and main
-static TICK_COUNTER: AtomicU32 = AtomicU32::new(0);
 static GPIOTE_PERIPHERAL: LockMut<gpiote::Gpiote> = LockMut::new();
 static DISPLAY: LockMut<Display<TIMER1>> = LockMut::new();
-static BEEP_RESOURCES: LockMut<BeepResources> = LockMut::new();
+static mut BEEP_RESOURCES: Option<BeepResources> = None;
+static mut RNG: Option<Rng> = None;
 
 // Sound configuration
 const BEEP_HZ: u32 = 440; // A4 note
 const BEEP_DURATION_MS: u32 = 100;
 
-// GPIOTE interrupt for button presses
+// GPIOTE interrupt for Button A or B presses
 #[interrupt]
 fn GPIOTE() {
     GPIOTE_PERIPHERAL.with_lock(|gpiote| {
-        let tick = TICK_COUNTER.load(Ordering::Relaxed);
+        // SAFETY: RNG is only accessed from this GPIOTE interrupt handler.
+        let rand_val = unsafe {
+            let random_byte = RNG.as_mut().unwrap().random_u8();
+            (random_byte % 6) + 1
+        };
 
-        // Button A (channel 0)
-        if gpiote.channel0().is_event_triggered() {
-            let random_seed = (tick.wrapping_mul(7).wrapping_add(13)) as u8;
-            let value = (random_seed % 6) + 1; // 1-6
+        update_display(rand_val);
+        play_beep_from_interrupt();
 
-            update_display(value);
-            play_beep_from_interrupt();
-
-            gpiote.channel0().reset_events();
-        }
-
-        // Button B (channel 1)
-        if gpiote.channel1().is_event_triggered() {
-
-            let random_seed = (tick.wrapping_mul(11).wrapping_add(17)) as u8;
-            let value = (random_seed % 6) + 1; // 1-6
-
-            update_display(value);
-            play_beep_from_interrupt();
-
-            gpiote.channel1().reset_events();
-        }
+        gpiote.channel0().reset_events();
+        gpiote.channel1().reset_events();
     });
 }
 
@@ -76,17 +61,20 @@ fn TIMER1() {
 }
 
 fn play_beep_from_interrupt() {
-    BEEP_RESOURCES.with_lock(|resources| {
-        let period_us = 1_000_000 / BEEP_HZ;
-        let cycles = (BEEP_DURATION_MS * 1000) / period_us;
+    // SAFETY: BEEP_RESOURCES is only accessed from the GPIOTE interrupt handler.
+    unsafe {
+        if let Some(resources) = BEEP_RESOURCES.as_mut() {
+            let period_us = 1_000_000 / BEEP_HZ;
+            let cycles = (BEEP_DURATION_MS * 1000) / period_us;
 
-        for _ in 0..cycles {
-            let _ = resources.speaker.set_high();
-            resources.timer.delay_us(period_us / 2);
-            let _ = resources.speaker.set_low();
-            resources.timer.delay_us(period_us / 2);
+            for _ in 0..cycles {
+                let _ = resources.speaker.set_high();
+                resources.timer.delay_us(period_us / 2);
+                let _ = resources.speaker.set_low();
+                resources.timer.delay_us(period_us / 2);
+            }
         }
-    });
+    }
 }
 
 fn update_display(value: u8) {
@@ -100,7 +88,6 @@ fn update_display(value: u8) {
 
 #[entry]
 fn main() -> ! {
-    rtt_init_print!();
     let board = microbit::Board::take().unwrap();
 
     // Set up non-blocking display with TIMER1
@@ -108,12 +95,24 @@ fn main() -> ! {
     DISPLAY.init(display);
     unsafe { pac::NVIC::unmask(pac::Interrupt::TIMER1) };
 
-    // Set up beep resources (speaker + timer) in global state
+    // Set up beep resources
     let beep_resources = BeepResources {
         speaker: board.speaker_pin.into_push_pull_output(gpio::Level::Low).degrade(),
         timer: Timer::new(board.TIMER0),
     };
-    BEEP_RESOURCES.init(beep_resources);
+    // SAFETY: GPIOTE interrupt (the only user of BEEP_RESOURCES) is not yet enabled.
+    // One-time initialization.
+    unsafe {
+        BEEP_RESOURCES = Some(beep_resources);
+    }
+
+    // Set up hardware RNG
+    let rng = Rng::new(board.RNG);
+    // SAFETY: GPIOTE interrupt (the only user of RNG) is not yet enabled.
+    // One-time initialization.
+    unsafe {
+        RNG = Some(rng);
+    }
 
     // Set up buttons as floating inputs
     let button_a = board.buttons.button_a.into_floating_input();
@@ -140,17 +139,20 @@ fn main() -> ! {
 
     GPIOTE_PERIPHERAL.init(gpiote);
 
+    // Show initial random value (before enabling GPIOTE interrupt)
+    // SAFETY: RNG is initialized above, and GPIOTE interrupt is not yet enabled.
+    let rand_val = unsafe {
+        let random_byte = RNG.as_mut().unwrap().random_u8();
+        (random_byte % 6) + 1
+    };
+
+    update_display(rand_val);
+
     // Enable GPIOTE interrupts
     unsafe { pac::NVIC::unmask(pac::Interrupt::GPIOTE) };
     pac::NVIC::unpend(pac::Interrupt::GPIOTE);
 
-    // Show initial value
-    update_display(1);
-
     loop {
-        // Increment tick counter for randomness
-        TICK_COUNTER.fetch_add(1, Ordering::Relaxed);
-
         // Sleep - display updates automatically via TIMER1 interrupt
         asm::wfi();
     }
