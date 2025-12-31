@@ -70,9 +70,7 @@ fn TIMER0() {
 fn TIMER1() {
     // SAFETY: Sequential execution among interrupts.
     unsafe {
-        if let Some(display) = DISPLAY.as_mut() {
-            display.handle_display_event();
-        }
+        DISPLAY.as_mut().unwrap().handle_display_event();
     }
 }
 
@@ -81,9 +79,7 @@ fn update_display(value: u8) {
     let image = BitImage::new(&pattern);
     // SAFETY: Sequential execution among interrupts.
     unsafe {
-        if let Some(display) = DISPLAY.as_mut() {
-            display.show(&image);
-        }
+        DISPLAY.as_mut().unwrap().show(&image);
     }
 }
 
