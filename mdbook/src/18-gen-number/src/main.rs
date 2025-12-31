@@ -4,7 +4,6 @@
 use cortex_m::asm;
 use cortex_m_rt::entry;
 use critical_section_lock_mut::LockMut;
-use embedded_hal::delay::DelayNs;
 use panic_rtt_target as _;
 
 use microbit::{
@@ -18,16 +17,11 @@ use microbit::{
     },
 };
 
-// Resources needed for beeping
-struct BeepResources {
-    pwm: Pwm<PWM0>,
-    timer: Timer<TIMER0>,
-}
-
 // Global state shared between interrupts and main
 static GPIOTE_PERIPHERAL: LockMut<gpiote::Gpiote> = LockMut::new();
 static mut DISPLAY: Option<Display<TIMER1>> = None;
-static mut BEEP_RESOURCES: Option<BeepResources> = None;
+static mut BEEP_PWM: Option<Pwm<PWM0>> = None;
+static mut BEEP_TIMER: Option<Timer<TIMER0>> = None;
 static mut RNG: Option<Rng> = None;
 
 // Sound configuration
@@ -36,26 +30,52 @@ const BEEP_DURATION_MS: u32 = 100;
 // GPIOTE interrupt for Button A or B presses
 #[interrupt]
 fn GPIOTE() {
-    GPIOTE_PERIPHERAL.with_lock(|gpiote| {
-        // SAFETY: RNG is only accessed from GPIOTE (within critical section) and main (before interrupts enabled).
-        let rand_val = unsafe {
-            let random_byte = RNG.as_mut().unwrap().random_u8();
-            (random_byte % 6) + 1
-        };
 
+    // SAFETY: RNG is only accessed from GPIOTE (not re-entrant).
+    let rand_val = unsafe {
+        let random_byte = RNG.as_mut().unwrap().random_u8();
+        (random_byte % 6) + 1
+    };
+
+    GPIOTE_PERIPHERAL.with_lock(|gpiote| {
+        // all interrupts are disabled in the critical section
         update_display(rand_val);
 
         gpiote.channel0().reset_events();
         gpiote.channel1().reset_events();
     });
 
-    play_beep_from_interrupt();
+    // play beep outside critical section
+    // SAFETY: BEEP_PWM and BEEP_TIMER accessed from GPIOTE (non-reentrant) and TIMER0 (non-reentrant).
+    // Same priority means they cannot preempt each other. Sequential execution.
+    unsafe {
+        // turn on beep
+        BEEP_PWM.as_mut().unwrap().set_duty_on(Channel::C0, 18182);
+
+        // turn on beep timer
+        let timer = BEEP_TIMER.as_mut().unwrap();
+        timer.start(BEEP_DURATION_MS * 1000u32);
+        timer.enable_interrupt();
+    }
+
 }
 
-// TIMER1 interrupt for display refresh
+// TIMER0 interrupt for beep duration
+#[interrupt]
+fn TIMER0() {
+    // SAFETY: BEEP_PWM and BEEP_TIMER accessed from GPIOTE (non-reentrant) and TIMER0 (non-reentrant).
+    // Same priority means they cannot preempt each other. Sequential execution.
+    unsafe {
+        // turn off beep and timer
+        BEEP_PWM.as_mut().unwrap().set_duty_on(Channel::C0, 0);
+        BEEP_TIMER.as_mut().unwrap().disable_interrupt();
+    }
+}
+
+// TIMER1 interrupt for LED rendering
 #[interrupt]
 fn TIMER1() {
-    // SAFETY: DISPLAY is written in main (before interrupts) and GPIOTE (via with_lock() critical section).
+    // SAFETY: DISPLAY is written in GPIOTE (via with_lock() critical section).
     // DISPLAY is read from TIMER1, but TIMER1 is disabled during GPIOTE's critical section.
     unsafe {
         if let Some(display) = DISPLAY.as_mut() {
@@ -64,27 +84,10 @@ fn TIMER1() {
     }
 }
 
-fn play_beep_from_interrupt() {
-    // SAFETY: BEEP_RESOURCES is only accessed from GPIOTE handler (non-reentrant) and main (before interrupts enabled).
-    // TIMER1 can preempt this function but doesn't access BEEP_RESOURCES.
-    unsafe {
-        if let Some(resources) = BEEP_RESOURCES.as_mut() {
-            // Turn on sound by setting 50% duty cycle
-            resources.pwm.set_duty_on(Channel::C0, 18182);
-
-            // Wait for beep duration
-            resources.timer.delay_ms(BEEP_DURATION_MS);
-
-            // Turn off sound by setting 0% duty cycle
-            resources.pwm.set_duty_on(Channel::C0, 0);
-        }
-    }
-}
-
 fn update_display(value: u8) {
     let pattern = get_dice_pattern(value);
     let image = BitImage::new(&pattern);
-    // SAFETY: DISPLAY is written in main (before interrupts) and GPIOTE (via with_lock() critical section).
+    // SAFETY: DISPLAY is written in GPIOTE (via with_lock() critical section).
     // DISPLAY is read from TIMER1, but TIMER1 is disabled during GPIOTE's critical section.
     unsafe {
         if let Some(display) = DISPLAY.as_mut() {
@@ -114,11 +117,8 @@ fn main() -> ! {
     pwm.set_duty_on(Channel::C0, 0); // Start silent (0% duty cycle)
     pwm.enable(); // Enable PWM but with 0 duty = no sound
 
-    // Set up beep resources with PWM
-    let beep_resources = BeepResources {
-        pwm,
-        timer: Timer::new(board.TIMER0),
-    };
+    // Set up timer for beep duration
+    let beep_timer = Timer::new(board.TIMER0);
 
     // Set up hardware RNG
     let rng = Rng::new(board.RNG);
@@ -126,7 +126,8 @@ fn main() -> ! {
     // SAFETY: One-time initialization before any interrupts are enabled.
     unsafe {
         DISPLAY = Some(display);
-        BEEP_RESOURCES = Some(beep_resources);
+        BEEP_PWM = Some(pwm);
+        BEEP_TIMER = Some(beep_timer);
         RNG = Some(rng);
     }
 
@@ -136,14 +137,17 @@ fn main() -> ! {
         (random_byte % 6) + 1
     };
 
+    // SAFETY: No interrupts enabled.
     update_display(rand_val);
 
-    // Enable TIMER1 interrupt for display refresh with high priority
+    // Enable TIMER1 interrupt for display refresh
     unsafe {
-        let mut nvic = cortex_m::Peripherals::steal().NVIC;
-        // nRF52833 has 3 priority bits in upper positions, so shift: 1 << (8-3) = 32
-        nvic.set_priority(pac::Interrupt::TIMER1, 32); // Priority level 1 (0x20)
         pac::NVIC::unmask(pac::Interrupt::TIMER1);
+    }
+
+    // Enable TIMER0 interrupt for beep duration
+    unsafe {
+        pac::NVIC::unmask(pac::Interrupt::TIMER0);
     }
 
     // Set up buttons as floating inputs
@@ -171,11 +175,8 @@ fn main() -> ! {
 
     GPIOTE_PERIPHERAL.init(gpiote);
 
-    // Enable GPIOTE interrupts with lower priority
+    // Enable GPIOTE interrupts
     unsafe {
-        let mut nvic = cortex_m::Peripherals::steal().NVIC;
-        // nRF52833 has 3 priority bits in upper positions, so shift: 2 << (8-3) = 64
-        nvic.set_priority(pac::Interrupt::GPIOTE, 64); // Priority level 2 (0x40)
         pac::NVIC::unmask(pac::Interrupt::GPIOTE);
     }
     pac::NVIC::unpend(pac::Interrupt::GPIOTE);
