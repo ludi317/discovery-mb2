@@ -3,7 +3,6 @@
 
 use cortex_m::asm;
 use cortex_m_rt::entry;
-use critical_section_lock_mut::LockMut;
 use panic_rtt_target as _;
 
 use microbit::{
@@ -18,7 +17,7 @@ use microbit::{
 };
 
 // Global state shared between interrupts and main
-static GPIOTE_PERIPHERAL: LockMut<gpiote::Gpiote> = LockMut::new();
+static mut GPIOTE_PERIPHERAL: Option<gpiote::Gpiote> = None;
 static mut DISPLAY: Option<Display<TIMER1>> = None;
 static mut BEEP_PWM: Option<Pwm<PWM0>> = None;
 static mut BEEP_TIMER: Option<Timer<TIMER0>> = None;
@@ -26,48 +25,42 @@ static mut RNG: Option<Rng> = None;
 
 // Sound configuration
 const BEEP_DURATION_MS: u32 = 100;
+const BEEP_HZ: u32 = 440; // A4 note
+const PWM_MAX_DUTY: u16 = (16_000_000 / BEEP_HZ) as u16; // 36364 for 440Hz
+const PWM_DUTY_BEEP_ON: u16 = PWM_MAX_DUTY / 2; // 50% duty cycle
+const PWM_DUTY_BEEP_OFF: u16 = 0; // Silent
 
 // GPIOTE interrupt for Button A or B presses
 #[interrupt]
 fn GPIOTE() {
-
-    // SAFETY: RNG is only accessed from GPIOTE (not re-entrant).
-    let rand_val = unsafe {
+    // SAFETY: Interrupts are not re-entrant. Interrupts with same priority cannot preempt each other.
+    // Sequential execution among interrupts.
+    unsafe {
         let random_byte = RNG.as_mut().unwrap().random_u8();
-        (random_byte % 6) + 1
-    };
+        let rand_val = (random_byte % 6) + 1;
 
-    GPIOTE_PERIPHERAL.with_lock(|gpiote| {
-        // all interrupts are disabled in the critical section
         update_display(rand_val);
 
+        let gpiote = GPIOTE_PERIPHERAL.as_mut().unwrap();
         gpiote.channel0().reset_events();
         gpiote.channel1().reset_events();
-    });
 
-    // play beep outside critical section
-    // SAFETY: BEEP_PWM and BEEP_TIMER accessed from GPIOTE (non-reentrant) and TIMER0 (non-reentrant).
-    // Same priority means they cannot preempt each other. Sequential execution.
-    unsafe {
-        // turn on beep
-        BEEP_PWM.as_mut().unwrap().set_duty_on(Channel::C0, 18182);
+        // Turn on beep
+        BEEP_PWM.as_mut().unwrap().set_duty_on(Channel::C0, PWM_DUTY_BEEP_ON);
 
-        // turn on beep timer
+        // Start beep timer
         let timer = BEEP_TIMER.as_mut().unwrap();
         timer.start(BEEP_DURATION_MS * 1000u32);
         timer.enable_interrupt();
     }
-
 }
 
 // TIMER0 interrupt for beep duration
 #[interrupt]
 fn TIMER0() {
-    // SAFETY: BEEP_PWM and BEEP_TIMER accessed from GPIOTE (non-reentrant) and TIMER0 (non-reentrant).
-    // Same priority means they cannot preempt each other. Sequential execution.
+    // SAFETY: Sequential execution among interrupts.
     unsafe {
-        // turn off beep and timer
-        BEEP_PWM.as_mut().unwrap().set_duty_on(Channel::C0, 0);
+        BEEP_PWM.as_mut().unwrap().set_duty_on(Channel::C0, PWM_DUTY_BEEP_OFF);
         BEEP_TIMER.as_mut().unwrap().disable_interrupt();
     }
 }
@@ -75,8 +68,7 @@ fn TIMER0() {
 // TIMER1 interrupt for LED rendering
 #[interrupt]
 fn TIMER1() {
-    // SAFETY: DISPLAY is written in GPIOTE (via with_lock() critical section).
-    // DISPLAY is read from TIMER1, but TIMER1 is disabled during GPIOTE's critical section.
+    // SAFETY: Sequential execution among interrupts.
     unsafe {
         if let Some(display) = DISPLAY.as_mut() {
             display.handle_display_event();
@@ -87,8 +79,7 @@ fn TIMER1() {
 fn update_display(value: u8) {
     let pattern = get_dice_pattern(value);
     let image = BitImage::new(&pattern);
-    // SAFETY: DISPLAY is written in GPIOTE (via with_lock() critical section).
-    // DISPLAY is read from TIMER1, but TIMER1 is disabled during GPIOTE's critical section.
+    // SAFETY: Sequential execution among interrupts.
     unsafe {
         if let Some(display) = DISPLAY.as_mut() {
             display.show(&image);
@@ -107,48 +98,19 @@ fn main() -> ! {
     let pwm = Pwm::new(board.PWM0);
 
     // Configure PWM: 440Hz tone with 50% duty cycle
-    // PWM frequency = 16MHz / prescaler / max_duty
-    // For 440Hz: max_duty = 16_000_000 / 440 ≈ 36364
     pwm.set_prescaler(microbit::hal::pwm::Prescaler::Div1);
-    pwm.set_max_duty(36364);
+    pwm.set_max_duty(PWM_MAX_DUTY);
 
     let speaker_pin = board.speaker_pin.into_push_pull_output(microbit::hal::gpio::Level::Low).degrade();
     pwm.set_output_pin(Channel::C0, speaker_pin);
-    pwm.set_duty_on(Channel::C0, 0); // Start silent (0% duty cycle)
-    pwm.enable(); // Enable PWM but with 0 duty = no sound
+    pwm.set_duty_on(Channel::C0, PWM_DUTY_BEEP_OFF); // Start silent
+    pwm.enable();
 
     // Set up timer for beep duration
     let beep_timer = Timer::new(board.TIMER0);
 
     // Set up hardware RNG
     let rng = Rng::new(board.RNG);
-
-    // SAFETY: One-time initialization before any interrupts are enabled.
-    unsafe {
-        DISPLAY = Some(display);
-        BEEP_PWM = Some(pwm);
-        BEEP_TIMER = Some(beep_timer);
-        RNG = Some(rng);
-    }
-
-    // SAFETY: RNG is initialized above, no interrupts enabled yet.
-    let rand_val = unsafe {
-        let random_byte = RNG.as_mut().unwrap().random_u8();
-        (random_byte % 6) + 1
-    };
-
-    // SAFETY: No interrupts enabled.
-    update_display(rand_val);
-
-    // Enable TIMER1 interrupt for display refresh
-    unsafe {
-        pac::NVIC::unmask(pac::Interrupt::TIMER1);
-    }
-
-    // Enable TIMER0 interrupt for beep duration
-    unsafe {
-        pac::NVIC::unmask(pac::Interrupt::TIMER0);
-    }
 
     // Set up buttons as floating inputs
     let button_a = board.buttons.button_a.into_floating_input();
@@ -172,17 +134,36 @@ fn main() -> ! {
         .hi_to_lo()
         .enable_interrupt();
     channel1.reset_events();
-
-    GPIOTE_PERIPHERAL.init(gpiote);
-
-    // Enable GPIOTE interrupts
+    
+    // SAFETY: One-time initialization before any interrupts are enabled.
     unsafe {
+        DISPLAY = Some(display);
+        BEEP_PWM = Some(pwm);
+        BEEP_TIMER = Some(beep_timer);
+        RNG = Some(rng);
+        GPIOTE_PERIPHERAL = Some(gpiote);
+    }
+
+    // SAFETY: RNG is initialized above, no interrupts enabled yet.
+    let rand_val = unsafe {
+        let random_byte = RNG.as_mut().unwrap().random_u8();
+        (random_byte % 6) + 1
+    };
+
+    // SAFETY: No interrupts enabled.
+    update_display(rand_val);
+
+    // Enable the interrupts
+    unsafe {
+        pac::NVIC::unmask(pac::Interrupt::TIMER1);
+        pac::NVIC::unmask(pac::Interrupt::TIMER0);
         pac::NVIC::unmask(pac::Interrupt::GPIOTE);
     }
+
     pac::NVIC::unpend(pac::Interrupt::GPIOTE);
 
     loop {
-        // Sleep until GPIOTE or TIMER1 interrupts
+        // Wait for Interrupt
         asm::wfi();
     }
 }
