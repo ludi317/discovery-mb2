@@ -38,7 +38,7 @@ const BEEP_DURATION_MS: u32 = 100;
 #[interrupt]
 fn GPIOTE() {
     GPIOTE_PERIPHERAL.with_lock(|gpiote| {
-        // SAFETY: RNG is only accessed from GPIOTE (interrupts disabled) and main (before interrupts enabled).
+        // SAFETY: RNG is only accessed from GPIOTE (within critical section) and main (before interrupts enabled).
         let rand_val = unsafe {
             let random_byte = RNG.as_mut().unwrap().random_u8();
             (random_byte % 6) + 1
@@ -55,8 +55,8 @@ fn GPIOTE() {
 // TIMER1 interrupt for display refresh
 #[interrupt]
 fn TIMER1() {
-    // SAFETY: DISPLAY written in GPIOTE (interrupts disabled) and main (before interrupts enabled).
-    // DISPLAY also read from TIMER1, but never concurrently with GPIOTE since GPIOTE disables all interrupts with_lock().
+    // SAFETY: DISPLAY is written in main (before interrupts) and GPIOTE (via with_lock() critical section).
+    // DISPLAY is read from TIMER1, but TIMER1 is disabled during GPIOTE's critical section.
     unsafe {
         if let Some(display) = DISPLAY.as_mut() {
             display.handle_display_event();
@@ -65,7 +65,7 @@ fn TIMER1() {
 }
 
 fn play_beep_from_interrupt() {
-    // SAFETY: BEEP_RESOURCES only accessed from GPIOTE (interrupts disabled) and main (before interrupts enabled).
+    // SAFETY: BEEP_RESOURCES only accessed from GPIOTE (within critical section) and main (before interrupts enabled).
     unsafe {
         if let Some(resources) = BEEP_RESOURCES.as_mut() {
             let period_us = 1_000_000 / BEEP_HZ;
@@ -84,8 +84,8 @@ fn play_beep_from_interrupt() {
 fn update_display(value: u8) {
     let pattern = get_dice_pattern(value);
     let image = BitImage::new(&pattern);
-    // SAFETY: DISPLAY written in GPIOTE (interrupts disabled) and main (before interrupts enabled).
-    // DISPLAY also read from TIMER1, but never concurrently with GPIOTE since GPIOTE disables all interrupts with_lock().
+    // SAFETY: DISPLAY is written in main (before interrupts) and GPIOTE (via with_lock() critical section).
+    // DISPLAY is read from TIMER1, but TIMER1 is disabled during GPIOTE's critical section.
     unsafe {
         if let Some(display) = DISPLAY.as_mut() {
             display.show(&image);
