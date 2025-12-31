@@ -4,15 +4,15 @@
 use cortex_m::asm;
 use cortex_m_rt::entry;
 use critical_section_lock_mut::LockMut;
-use embedded_hal::{delay::DelayNs, digital::OutputPin};
+use embedded_hal::delay::DelayNs;
 use panic_rtt_target as _;
 
 use microbit::{
     display::nonblocking::{Display, BitImage},
     hal::{
-        gpio::{self, Pin, Output, PushPull},
         gpiote,
-        pac::{self, interrupt, TIMER0, TIMER1},
+        pac::{self, interrupt, PWM0, TIMER0, TIMER1},
+        pwm::{Pwm, Channel},
         rng::Rng,
         Timer,
     },
@@ -20,7 +20,7 @@ use microbit::{
 
 // Resources needed for beeping
 struct BeepResources {
-    speaker: Pin<Output<PushPull>>,
+    pwm: Pwm<PWM0>,
     timer: Timer<TIMER0>,
 }
 
@@ -31,7 +31,6 @@ static mut BEEP_RESOURCES: Option<BeepResources> = None;
 static mut RNG: Option<Rng> = None;
 
 // Sound configuration
-const BEEP_HZ: u32 = 440; // A4 note
 const BEEP_DURATION_MS: u32 = 100;
 
 // GPIOTE interrupt for Button A or B presses
@@ -45,11 +44,12 @@ fn GPIOTE() {
         };
 
         update_display(rand_val);
-        play_beep_from_interrupt();
 
         gpiote.channel0().reset_events();
         gpiote.channel1().reset_events();
     });
+
+    play_beep_from_interrupt();
 }
 
 // TIMER1 interrupt for display refresh
@@ -65,18 +65,18 @@ fn TIMER1() {
 }
 
 fn play_beep_from_interrupt() {
-    // SAFETY: BEEP_RESOURCES only accessed from GPIOTE (within critical section) and main (before interrupts enabled).
+    // SAFETY: BEEP_RESOURCES is only accessed from GPIOTE handler (non-reentrant) and main (before interrupts enabled).
+    // TIMER1 can preempt this function but doesn't access BEEP_RESOURCES.
     unsafe {
         if let Some(resources) = BEEP_RESOURCES.as_mut() {
-            let period_us = 1_000_000 / BEEP_HZ;
-            let cycles = (BEEP_DURATION_MS * 1000) / period_us;
+            // Turn on sound by setting 50% duty cycle
+            resources.pwm.set_duty_on(Channel::C0, 18182);
 
-            for _ in 0..cycles {
-                let _ = resources.speaker.set_high();
-                resources.timer.delay_us(period_us / 2);
-                let _ = resources.speaker.set_low();
-                resources.timer.delay_us(period_us / 2);
-            }
+            // Wait for beep duration
+            resources.timer.delay_ms(BEEP_DURATION_MS);
+
+            // Turn off sound by setting 0% duty cycle
+            resources.pwm.set_duty_on(Channel::C0, 0);
         }
     }
 }
@@ -100,9 +100,23 @@ fn main() -> ! {
     // Set up non-blocking display with TIMER1
     let display = Display::new(board.TIMER1, board.display_pins);
 
-    // Set up beep resources
+    // Set up PWM for audio on speaker pin
+    let pwm = Pwm::new(board.PWM0);
+
+    // Configure PWM: 440Hz tone with 50% duty cycle
+    // PWM frequency = 16MHz / prescaler / max_duty
+    // For 440Hz: max_duty = 16_000_000 / 440 ≈ 36364
+    pwm.set_prescaler(microbit::hal::pwm::Prescaler::Div1);
+    pwm.set_max_duty(36364);
+
+    let speaker_pin = board.speaker_pin.into_push_pull_output(microbit::hal::gpio::Level::Low).degrade();
+    pwm.set_output_pin(Channel::C0, speaker_pin);
+    pwm.set_duty_on(Channel::C0, 0); // Start silent (0% duty cycle)
+    pwm.enable(); // Enable PWM but with 0 duty = no sound
+
+    // Set up beep resources with PWM
     let beep_resources = BeepResources {
-        speaker: board.speaker_pin.into_push_pull_output(gpio::Level::Low).degrade(),
+        pwm,
         timer: Timer::new(board.TIMER0),
     };
 
@@ -124,8 +138,11 @@ fn main() -> ! {
 
     update_display(rand_val);
 
-    // Enable TIMER1 interrupt for display refresh
+    // Enable TIMER1 interrupt for display refresh with high priority
     unsafe {
+        let mut nvic = cortex_m::Peripherals::steal().NVIC;
+        // nRF52833 has 3 priority bits in upper positions, so shift: 1 << (8-3) = 32
+        nvic.set_priority(pac::Interrupt::TIMER1, 32); // Priority level 1 (0x20)
         pac::NVIC::unmask(pac::Interrupt::TIMER1);
     }
 
@@ -154,8 +171,13 @@ fn main() -> ! {
 
     GPIOTE_PERIPHERAL.init(gpiote);
 
-    // Enable GPIOTE interrupts
-    unsafe { pac::NVIC::unmask(pac::Interrupt::GPIOTE) };
+    // Enable GPIOTE interrupts with lower priority
+    unsafe {
+        let mut nvic = cortex_m::Peripherals::steal().NVIC;
+        // nRF52833 has 3 priority bits in upper positions, so shift: 2 << (8-3) = 64
+        nvic.set_priority(pac::Interrupt::GPIOTE, 64); // Priority level 2 (0x40)
+        pac::NVIC::unmask(pac::Interrupt::GPIOTE);
+    }
     pac::NVIC::unpend(pac::Interrupt::GPIOTE);
 
     loop {
