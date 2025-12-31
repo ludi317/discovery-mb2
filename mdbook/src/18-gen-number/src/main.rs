@@ -1,5 +1,6 @@
 #![no_main]
 #![no_std]
+#![allow(static_mut_refs)]
 
 use cortex_m::asm;
 use cortex_m_rt::entry;
