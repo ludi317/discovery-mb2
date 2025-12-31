@@ -26,7 +26,7 @@ struct BeepResources {
 
 // Global state shared between interrupts and main
 static GPIOTE_PERIPHERAL: LockMut<gpiote::Gpiote> = LockMut::new();
-static DISPLAY: LockMut<Display<TIMER1>> = LockMut::new();
+static mut DISPLAY: Option<Display<TIMER1>> = None;
 static mut BEEP_RESOURCES: Option<BeepResources> = None;
 static mut RNG: Option<Rng> = None;
 
@@ -38,7 +38,7 @@ const BEEP_DURATION_MS: u32 = 100;
 #[interrupt]
 fn GPIOTE() {
     GPIOTE_PERIPHERAL.with_lock(|gpiote| {
-        // SAFETY: RNG is only accessed from this GPIOTE interrupt handler.
+        // SAFETY: RNG is only accessed from GPIOTE (interrupts disabled) and main (before interrupts enabled).
         let rand_val = unsafe {
             let random_byte = RNG.as_mut().unwrap().random_u8();
             (random_byte % 6) + 1
@@ -55,13 +55,17 @@ fn GPIOTE() {
 // TIMER1 interrupt for display refresh
 #[interrupt]
 fn TIMER1() {
-    DISPLAY.with_lock(|display| {
-        display.handle_display_event();
-    });
+    // SAFETY: DISPLAY written in GPIOTE (interrupts disabled) and main (before interrupts enabled).
+    // DISPLAY also read from TIMER1, but never concurrently with GPIOTE since GPIOTE disables all interrupts with_lock().
+    unsafe {
+        if let Some(display) = DISPLAY.as_mut() {
+            display.handle_display_event();
+        }
+    }
 }
 
 fn play_beep_from_interrupt() {
-    // SAFETY: BEEP_RESOURCES is only accessed from the GPIOTE interrupt handler.
+    // SAFETY: BEEP_RESOURCES only accessed from GPIOTE (interrupts disabled) and main (before interrupts enabled).
     unsafe {
         if let Some(resources) = BEEP_RESOURCES.as_mut() {
             let period_us = 1_000_000 / BEEP_HZ;
@@ -80,10 +84,13 @@ fn play_beep_from_interrupt() {
 fn update_display(value: u8) {
     let pattern = get_dice_pattern(value);
     let image = BitImage::new(&pattern);
-
-    DISPLAY.with_lock(|display| {
-        display.show(&image);
-    });
+    // SAFETY: DISPLAY written in GPIOTE (interrupts disabled) and main (before interrupts enabled).
+    // DISPLAY also read from TIMER1, but never concurrently with GPIOTE since GPIOTE disables all interrupts with_lock().
+    unsafe {
+        if let Some(display) = DISPLAY.as_mut() {
+            display.show(&image);
+        }
+    }
 }
 
 #[entry]
@@ -92,26 +99,34 @@ fn main() -> ! {
 
     // Set up non-blocking display with TIMER1
     let display = Display::new(board.TIMER1, board.display_pins);
-    DISPLAY.init(display);
-    unsafe { pac::NVIC::unmask(pac::Interrupt::TIMER1) };
 
     // Set up beep resources
     let beep_resources = BeepResources {
         speaker: board.speaker_pin.into_push_pull_output(gpio::Level::Low).degrade(),
         timer: Timer::new(board.TIMER0),
     };
-    // SAFETY: GPIOTE interrupt (the only user of BEEP_RESOURCES) is not yet enabled.
-    // One-time initialization.
-    unsafe {
-        BEEP_RESOURCES = Some(beep_resources);
-    }
 
     // Set up hardware RNG
     let rng = Rng::new(board.RNG);
-    // SAFETY: GPIOTE interrupt (the only user of RNG) is not yet enabled.
-    // One-time initialization.
+
+    // SAFETY: One-time initialization before any interrupts are enabled.
     unsafe {
+        DISPLAY = Some(display);
+        BEEP_RESOURCES = Some(beep_resources);
         RNG = Some(rng);
+    }
+
+    // SAFETY: RNG is initialized above, no interrupts enabled yet.
+    let rand_val = unsafe {
+        let random_byte = RNG.as_mut().unwrap().random_u8();
+        (random_byte % 6) + 1
+    };
+
+    update_display(rand_val);
+
+    // Enable TIMER1 interrupt for display refresh
+    unsafe {
+        pac::NVIC::unmask(pac::Interrupt::TIMER1);
     }
 
     // Set up buttons as floating inputs
@@ -139,21 +154,12 @@ fn main() -> ! {
 
     GPIOTE_PERIPHERAL.init(gpiote);
 
-    // Show initial random value (before enabling GPIOTE interrupt)
-    // SAFETY: RNG is initialized above, and GPIOTE interrupt is not yet enabled.
-    let rand_val = unsafe {
-        let random_byte = RNG.as_mut().unwrap().random_u8();
-        (random_byte % 6) + 1
-    };
-
-    update_display(rand_val);
-
     // Enable GPIOTE interrupts
     unsafe { pac::NVIC::unmask(pac::Interrupt::GPIOTE) };
     pac::NVIC::unpend(pac::Interrupt::GPIOTE);
 
     loop {
-        // Sleep - display updates automatically via TIMER1 interrupt
+        // Sleep until GPIOTE or TIMER1 interrupts
         asm::wfi();
     }
 }
