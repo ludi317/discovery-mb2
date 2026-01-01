@@ -1,7 +1,6 @@
 [package]
 name = "led-tilt"
 version = "0.1.0"
-authors = ["Henrik Böving <hargonix@gmail.com>"]
 edition = "2021"
 
 [dependencies]
