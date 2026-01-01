@@ -49,6 +49,8 @@ fn GPIOTE() {
             // If starting the timer, enable countdown interrupt
             if TIMER_RUNNING && REMAINING_SECONDS > 0 {
                 let timer = COUNTDOWN_TIMER.as_mut().unwrap();
+                timer.disable_interrupt();
+                pac::NVIC::unpend(pac::Interrupt::TIMER0);
                 timer.start(1_000_000u32); // 1 second
                 timer.enable_interrupt();
             }
@@ -64,10 +66,6 @@ fn GPIOTE() {
             // Stop the countdown timer
             let timer = COUNTDOWN_TIMER.as_mut().unwrap();
             timer.disable_interrupt();
-
-            // Stop and turn off beep if it's on
-            BEEP_TIMER.as_mut().unwrap().disable_interrupt();
-            BEEP_PWM.as_mut().unwrap().set_duty_on(Channel::C0, PWM_DUTY_BEEP_OFF);
 
             // Update display
             update_display(REMAINING_SECONDS);
