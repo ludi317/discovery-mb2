@@ -45,14 +45,16 @@ fn GPIOTE() {
         // Check if Button A was pressed (toggle timer)
         if gpiote.channel0().is_event_triggered() {
             TIMER_RUNNING = !TIMER_RUNNING;
+            let timer = COUNTDOWN_TIMER.as_mut().unwrap();
 
             // If starting the timer, enable countdown interrupt
             if TIMER_RUNNING && REMAINING_SECONDS > 0 {
-                let timer = COUNTDOWN_TIMER.as_mut().unwrap();
                 timer.disable_interrupt();
                 pac::NVIC::unpend(pac::Interrupt::TIMER0);
                 timer.start(1_000_000u32); // 1 second
                 timer.enable_interrupt();
+            } else {
+                timer.disable_interrupt();
             }
 
             gpiote.channel0().reset_events();
@@ -66,6 +68,7 @@ fn GPIOTE() {
             // Stop the countdown timer
             let timer = COUNTDOWN_TIMER.as_mut().unwrap();
             timer.disable_interrupt();
+            pac::NVIC::unpend(pac::Interrupt::TIMER0);
 
             // Update display
             update_display(REMAINING_SECONDS);
@@ -82,26 +85,24 @@ fn TIMER0() {
     unsafe {
         let timer = COUNTDOWN_TIMER.as_mut().unwrap();
 
-        if TIMER_RUNNING && REMAINING_SECONDS > 0 {
-            REMAINING_SECONDS -= 1;
-            update_display(REMAINING_SECONDS);
+        REMAINING_SECONDS -= 1;
+        update_display(REMAINING_SECONDS);
 
-            if REMAINING_SECONDS == 0 {
-                // Timer reached 0, beep and stop
-                TIMER_RUNNING = false;
-                timer.disable_interrupt();
+        if REMAINING_SECONDS == 0 {
+            // Timer reached 0, beep and stop
+            TIMER_RUNNING = false;
+            timer.disable_interrupt();
 
-                // Turn on beep
-                BEEP_PWM.as_mut().unwrap().set_duty_on(Channel::C0, PWM_DUTY_BEEP_ON);
+            // Turn on beep
+            BEEP_PWM.as_mut().unwrap().set_duty_on(Channel::C0, PWM_DUTY_BEEP_ON);
 
-                // Start beep timer
-                let beep_timer = BEEP_TIMER.as_mut().unwrap();
-                beep_timer.start(BEEP_DURATION_MS * 1000u32);
-                beep_timer.enable_interrupt();
-            } else {
-                // Continue countdown
-                timer.start(1_000_000u32); // 1 second
-            }
+            // Start beep timer
+            let beep_timer = BEEP_TIMER.as_mut().unwrap();
+            beep_timer.start(BEEP_DURATION_MS * 1000u32);
+            beep_timer.enable_interrupt();
+        } else {
+            // Continue countdown
+            timer.start(1_000_000u32); // 1 second
         }
     }
 }
