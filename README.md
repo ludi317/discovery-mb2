@@ -1,3 +1,13 @@
+## Bonus Projects
+
+This is a fork of the embedded Discovery book, with some extra projects I added.
+
+- **17-led-tilt**: Tilt-based LED control using the accelerometer to create interactive visual effects. A digital replica of ball-in-the-maze game.
+- **18-gen-number**: Digital random number generator. Uses lock-free interrupt-driven program design with button inputs, PWM audio output, and non-blocking LED display.
+- **19-sound-visualizer**: Audio spectrum visualization using the microphone and LED matrix to display sound levels.
+- **20-timer**: 10-second countdown timer. Lock-free interrupt-driven program design with second-interval countdown, digit display, and completion beep.
+
+-----
 # `micro::bit v2 Embedded Discovery Book`
 
 The published text of this book is at
