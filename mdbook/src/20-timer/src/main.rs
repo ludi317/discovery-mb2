@@ -28,12 +28,12 @@ static mut BLINK_TIMER: Option<Timer<TIMER3>> = None;
 static mut REMAINING_SECONDS: u32 = 10;
 static mut TIMER_RUNNING: bool = false;
 static mut NUM_BLINKS: u32 = 0;
-const MAX_BLINKS: u32 = 14;
+const MAX_BLINKS: u32 = 10;
 const COUNTDOWN_TIMER_INTERVAL: u32 = 1_000_000u32; // 1 second
 const BLINK_TIMER_INTERVAL: u32 = 100 * 1_000u32; // 100 ms
 
 // Sound configuration
-const BEEP_DURATION_MS: u32 = 200;
+const BEEP_DURATION_MS: u32 = 100;
 const BEEP_HZ: u32 = 440; // A4 note
 const PWM_MAX_DUTY: u16 = (16_000_000 / BEEP_HZ) as u16;
 const PWM_DUTY_BEEP_ON: u16 = PWM_MAX_DUTY / 2; // 50% duty cycle
@@ -150,7 +150,7 @@ fn TIMER3() {
         }
 
         NUM_BLINKS += 1;
-        if NUM_BLINKS == MAX_BLINKS {
+        if NUM_BLINKS == MAX_BLINKS * 2 {
             blink_timer.disable_interrupt();
             NUM_BLINKS = 0;
         } else {
