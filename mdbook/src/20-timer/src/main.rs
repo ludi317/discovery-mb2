@@ -10,7 +10,7 @@ use microbit::{
     display::nonblocking::{Display, BitImage},
     hal::{
         gpiote,
-        pac::{self, interrupt, PWM0, TIMER0, TIMER1, TIMER2},
+        pac::{self, interrupt, PWM0, TIMER0, TIMER1, TIMER2, TIMER3},
         pwm::{Pwm, Channel},
         Timer,
     },
@@ -22,10 +22,15 @@ static mut DISPLAY: Option<Display<TIMER1>> = None;
 static mut BEEP_PWM: Option<Pwm<PWM0>> = None;
 static mut COUNTDOWN_TIMER: Option<Timer<TIMER0>> = None;
 static mut BEEP_TIMER: Option<Timer<TIMER2>> = None;
+static mut BLINK_TIMER: Option<Timer<TIMER3>> = None;
 
 // Timer state
 static mut REMAINING_SECONDS: u32 = 10;
 static mut TIMER_RUNNING: bool = false;
+static mut NUM_BLINKS: u32 = 0;
+const MAX_BLINKS: u32 = 14;
+const COUNTDOWN_TIMER_INTERVAL: u32 = 1_000_000u32; // 1 second
+const BLINK_TIMER_INTERVAL: u32 = 100 * 1_000u32; // 100 ms
 
 // Sound configuration
 const BEEP_DURATION_MS: u32 = 200;
@@ -45,16 +50,16 @@ fn GPIOTE() {
         // Check if Button A was pressed (toggle timer)
         if gpiote.channel0().is_event_triggered() {
             TIMER_RUNNING = !TIMER_RUNNING;
-            let timer = COUNTDOWN_TIMER.as_mut().unwrap();
+            let countdown_timer = COUNTDOWN_TIMER.as_mut().unwrap();
 
             // If starting the timer, enable countdown interrupt
             if TIMER_RUNNING && REMAINING_SECONDS > 0 {
-                timer.disable_interrupt();
+                countdown_timer.disable_interrupt();
                 pac::NVIC::unpend(pac::Interrupt::TIMER0);
-                timer.start(1_000_000u32); // 1 second
-                timer.enable_interrupt();
+                countdown_timer.start(COUNTDOWN_TIMER_INTERVAL);
+                countdown_timer.enable_interrupt();
             } else {
-                timer.disable_interrupt();
+                countdown_timer.disable_interrupt();
             }
 
             gpiote.channel0().reset_events();
@@ -83,7 +88,7 @@ fn GPIOTE() {
 fn TIMER0() {
     // SAFETY: Sequential execution among interrupts.
     unsafe {
-        let timer = COUNTDOWN_TIMER.as_mut().unwrap();
+        let countdown_timer = COUNTDOWN_TIMER.as_mut().unwrap();
 
         REMAINING_SECONDS -= 1;
         update_display(REMAINING_SECONDS);
@@ -91,7 +96,7 @@ fn TIMER0() {
         if REMAINING_SECONDS == 0 {
             // Timer reached 0, beep and stop
             TIMER_RUNNING = false;
-            timer.disable_interrupt();
+            countdown_timer.disable_interrupt();
 
             // Turn on beep
             BEEP_PWM.as_mut().unwrap().set_duty_on(Channel::C0, PWM_DUTY_BEEP_ON);
@@ -100,9 +105,14 @@ fn TIMER0() {
             let beep_timer = BEEP_TIMER.as_mut().unwrap();
             beep_timer.start(BEEP_DURATION_MS * 1000u32);
             beep_timer.enable_interrupt();
+            
+            // Start blink timer
+            let blink_timer = BLINK_TIMER.as_mut().unwrap();
+            blink_timer.start(100 * 1000u32);
+            blink_timer.enable_interrupt();
         } else {
             // Continue countdown
-            timer.start(1_000_000u32); // 1 second
+            countdown_timer.start(COUNTDOWN_TIMER_INTERVAL);
         }
     }
 }
@@ -123,6 +133,29 @@ fn TIMER2() {
     unsafe {
         BEEP_PWM.as_mut().unwrap().set_duty_on(Channel::C0, PWM_DUTY_BEEP_OFF);
         BEEP_TIMER.as_mut().unwrap().disable_interrupt();
+    }
+}
+
+// TIMER3 interrupt for blinking
+#[interrupt]
+fn TIMER3() {
+    // SAFETY: Sequential execution among interrupts.
+    unsafe {
+        let blink_timer = BLINK_TIMER.as_mut().unwrap();
+        
+        if NUM_BLINKS % 2 == 0 {
+            update_display(11);
+        } else {
+            update_display(0);
+        }
+
+        NUM_BLINKS += 1;
+        if NUM_BLINKS == MAX_BLINKS {
+            blink_timer.disable_interrupt();
+            NUM_BLINKS = 0;
+        } else {
+            blink_timer.start(BLINK_TIMER_INTERVAL);
+        }
     }
 }
 
@@ -159,6 +192,9 @@ fn main() -> ! {
 
     // Set up timer for beep duration
     let beep_timer = Timer::new(board.TIMER2);
+    
+    // Set up timer for blinks
+    let blink_timer = Timer::new(board.TIMER3);
 
     // Set up buttons as floating inputs
     let button_a = board.buttons.button_a.into_floating_input();
@@ -189,6 +225,7 @@ fn main() -> ! {
         BEEP_PWM = Some(pwm);
         COUNTDOWN_TIMER = Some(countdown_timer);
         BEEP_TIMER = Some(beep_timer);
+        BLINK_TIMER = Some(blink_timer);
         GPIOTE_PERIPHERAL = Some(gpiote);
     }
 
@@ -200,6 +237,7 @@ fn main() -> ! {
         pac::NVIC::unmask(pac::Interrupt::TIMER1);
         pac::NVIC::unmask(pac::Interrupt::TIMER0);
         pac::NVIC::unmask(pac::Interrupt::TIMER2);
+        pac::NVIC::unmask(pac::Interrupt::TIMER3);
         pac::NVIC::unmask(pac::Interrupt::GPIOTE);
     }
 
