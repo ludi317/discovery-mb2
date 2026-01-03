@@ -1,6 +1,6 @@
 ## Bonus Projects
 
-This is a fork of the embedded Discovery book, with some extra projects I added.
+This is a fork of the embedded Discovery book, with some extra projects I added. This [blog post](https://medium.com/@ludirehak/stupidly-simple-concurrent-embedded-programs-705dab969d73) describes the design pattern I used  to write data-race-free programs with zero cost.
 
 - **17-led-tilt**: Tilt-based LED control using the accelerometer to create interactive visual effects. A digital replica of ball-in-the-maze game.
 - **18-gen-number**: Digital random number generator. Uses lock-free interrupt-driven program design with button inputs, PWM audio output, and non-blocking LED display.
